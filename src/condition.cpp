@@ -139,7 +139,7 @@ void Condition::serialize(PropWriteStream& propWriteStream)
 
 	propWriteStream.write<uint8_t>(CONDITIONATTR_SUBID);
 	propWriteStream.write<uint32_t>(subId);
-	
+
 	propWriteStream.write<uint8_t>(CONDITIONATTR_ISAGGRESSIVE);
 	propWriteStream.write<uint8_t>(aggressive);
 }
@@ -264,6 +264,10 @@ Condition* Condition::createCondition(PropStream& propStream)
 
 	uint32_t subId;
 	if (!propStream.read<uint32_t>(subId)) {
+		return nullptr;
+	}
+
+	if (!propStream.read<uint8_t>(attr) || attr != CONDITIONATTR_ISAGGRESSIVE) {
 		return nullptr;
 	}
 
@@ -1345,12 +1349,6 @@ void ConditionSpeed::setFormulaVars(float mina, float minb, float maxa, float ma
 	this->maxb = maxb;
 }
 
-void ConditionSpeed::getFormulaValues(int32_t var, int32_t& min, int32_t& max) const
-{
-	min = (var * mina) + minb;
-	max = (var * maxa) + maxb;
-}
-
 bool ConditionSpeed::setParam(ConditionParam_t param, int32_t value)
 {
 	Condition::setParam(param, value);
@@ -1404,6 +1402,11 @@ void ConditionSpeed::serialize(PropWriteStream& propWriteStream)
 	propWriteStream.write<float>(maxb);
 }
 
+static std::pair<int32_t, int32_t> getFormulaValues(int32_t var, float mina, float minb, float maxa, float maxb)
+{
+	return {std::fma(var, mina, minb), std::fma(var, maxa, maxb)};
+}
+
 bool ConditionSpeed::startCondition(Creature* creature)
 {
 	if (!Condition::startCondition(creature)) {
@@ -1411,9 +1414,8 @@ bool ConditionSpeed::startCondition(Creature* creature)
 	}
 
 	if (speedDelta == 0) {
-		int32_t min, max;
-		getFormulaValues(creature->getBaseSpeed(), min, max);
-		speedDelta = uniform_random(min, max);
+		auto minmax = getFormulaValues(creature->getBaseSpeed(), mina, minb, maxa, maxb);
+		speedDelta = uniform_random(minmax.first, minmax.second);
 	}
 
 	g_game.changeSpeed(creature, speedDelta);
@@ -1451,10 +1453,8 @@ void ConditionSpeed::addCondition(Creature* creature, const Condition* condition
 	maxb = conditionSpeed.maxb;
 
 	if (speedDelta == 0) {
-		int32_t min;
-		int32_t max;
-		getFormulaValues(creature->getBaseSpeed(), min, max);
-		speedDelta = uniform_random(min, max);
+		auto minmax = getFormulaValues(creature->getBaseSpeed(), mina, minb, maxa, maxb);
+		speedDelta = uniform_random(minmax.first, minmax.second);
 	}
 
 	int32_t newSpeedChange = (speedDelta - oldSpeedDelta);

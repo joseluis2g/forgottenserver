@@ -22,7 +22,6 @@
 
 #include "creature.h"
 
-
 const uint32_t MAX_LOOTCHANCE = 100000;
 
 struct LootBlock {
@@ -176,7 +175,7 @@ class MonsterType
 
 		MonsterInfo info;
 
-		void loadLoot(MonsterType* monsterType, LootBlock lootblock);
+		void loadLoot(MonsterType* monsterType, LootBlock lootBlock);
 };
 
 class MonsterSpell

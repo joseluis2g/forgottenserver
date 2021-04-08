@@ -48,9 +48,12 @@ MuteCountMap Player::muteCountMap;
 uint32_t Player::playerAutoID = 0x10000000;
 
 Player::Player(ProtocolGame_ptr p) :
-	Creature(), lastPing(OTSYS_TIME()), lastPong(lastPing), inbox(new Inbox(ITEM_INBOX)), client(std::move(p))
+	Creature(), lastPing(OTSYS_TIME()), lastPong(lastPing), inbox(new Inbox(ITEM_INBOX)), storeInbox(new StoreInbox(ITEM_STORE_INBOX)), client(std::move(p))
 {
 	inbox->incrementReferenceCounter();
+
+	storeInbox->setParent(this);
+	storeInbox->incrementReferenceCounter();
 }
 
 Player::~Player()
@@ -68,6 +71,9 @@ Player::~Player()
 	}
 
 	inbox->decrementReferenceCounter();
+
+	storeInbox->setParent(nullptr);
+	storeInbox->decrementReferenceCounter();
 
 	setWriteItem(nullptr);
 	setEditHouse(nullptr);
@@ -699,7 +705,7 @@ bool Player::canWalkthrough(const Creature* creature) const
 	}
 
 	const Player* player = creature->getPlayer();
-	if (!player) {
+	if (!player || !g_config.getBoolean(ConfigManager::ALLOW_WALKTHROUGH)) {
 		return false;
 	}
 
@@ -735,7 +741,7 @@ bool Player::canWalkthroughEx(const Creature* creature) const
 	}
 
 	const Player* player = creature->getPlayer();
-	if (!player) {
+	if (!player || !g_config.getBoolean(ConfigManager::ALLOW_WALKTHROUGH)) {
 		return false;
 	}
 
@@ -921,9 +927,12 @@ void Player::sendAddContainerItem(const Container* container, const Item* item)
 				slot = containerSize;
 			}
 		} else if (openContainer.index >= container->capacity()) {
-			item = container->getItemByIndex(openContainer.index - 1);
+			item = container->getItemByIndex(openContainer.index);
 		}
-		client->sendAddContainerItem(it.first, slot, item);
+
+		if (item) {
+			client->sendAddContainerItem(it.first, slot, item);
+		}
 	}
 }
 
@@ -1033,7 +1042,6 @@ void Player::onCreatureAppear(Creature* creature, bool isLogin)
 		}
 
 		Account account = IOLoginData::loadAccount(accountNumber);
-		Game::updatePremium(account);
 
 		std::cout << name << " has logged in." << std::endl;
 
@@ -1243,7 +1251,7 @@ void Player::onCreatureMove(Creature* creature, const Tile* newTile, const Posit
 
 	// close modal windows
 	if (!modalWindows.empty()) {
-		// TODO: This shouldn't be hardcoded
+		// TODO: This shouldn't be hard-coded
 		for (uint32_t modalWindowId : modalWindows) {
 			if (modalWindowId == std::numeric_limits<uint32_t>::max()) {
 				sendTextMessage(MESSAGE_EVENT_ADVANCE, "Offline training aborted.");
@@ -1821,9 +1829,9 @@ bool Player::hasShield() const
 }
 
 BlockType_t Player::blockHit(Creature* attacker, CombatType_t combatType, int32_t& damage,
-                             bool checkDefense /* = false*/, bool checkArmor /* = false*/, bool field /* = false*/)
+                             bool checkDefense /* = false*/, bool checkArmor /* = false*/, bool field /* = false*/, bool ignoreResistances /* = false*/)
 {
-	BlockType_t blockType = Creature::blockHit(attacker, combatType, damage, checkDefense, checkArmor, field);
+	BlockType_t blockType = Creature::blockHit(attacker, combatType, damage, checkDefense, checkArmor, field, ignoreResistances);
 
 	if (attacker) {
 		sendCreatureSquare(attacker, SQ_COLOR_BLACK);
@@ -1838,44 +1846,46 @@ BlockType_t Player::blockHit(Creature* attacker, CombatType_t combatType, int32_
 		return BLOCK_ARMOR;
 	}
 
-	for (int32_t slot = CONST_SLOT_FIRST; slot <= CONST_SLOT_LAST; ++slot) {
-		if (!isItemAbilityEnabled(static_cast<slots_t>(slot))) {
-			continue;
-		}
-
-		Item* item = inventory[slot];
-		if (!item) {
-			continue;
-		}
-
-		const ItemType& it = Item::items[item->getID()];
-		if (!it.abilities) {
-			if (damage <= 0) {
-				damage = 0;
-				return BLOCK_ARMOR;
+	if (!ignoreResistances) {
+		for (int32_t slot = CONST_SLOT_FIRST; slot <= CONST_SLOT_AMMO; ++slot) {
+			if (!isItemAbilityEnabled(static_cast<slots_t>(slot))) {
+				continue;
 			}
 
-			continue;
-		}
-
-		const int16_t& absorbPercent = it.abilities->absorbPercent[combatTypeToIndex(combatType)];
-		if (absorbPercent != 0) {
-			damage -= std::round(damage * (absorbPercent / 100.));
-
-			uint16_t charges = item->getCharges();
-			if (charges != 0) {
-				g_game.transformItem(item, item->getID(), charges - 1);
+			Item* item = inventory[slot];
+			if (!item) {
+				continue;
 			}
-		}
 
-		if (field) {
-			const int16_t& fieldAbsorbPercent = it.abilities->fieldAbsorbPercent[combatTypeToIndex(combatType)];
-			if (fieldAbsorbPercent != 0) {
-				damage -= std::round(damage * (fieldAbsorbPercent / 100.));
+			const ItemType& it = Item::items[item->getID()];
+			if (!it.abilities) {
+				if (damage <= 0) {
+					damage = 0;
+					return BLOCK_ARMOR;
+				}
+
+				continue;
+			}
+
+			const int16_t& absorbPercent = it.abilities->absorbPercent[combatTypeToIndex(combatType)];
+			if (absorbPercent != 0) {
+				damage -= std::round(damage * (absorbPercent / 100.));
 
 				uint16_t charges = item->getCharges();
 				if (charges != 0) {
 					g_game.transformItem(item, item->getID(), charges - 1);
+				}
+			}
+
+			if (field) {
+				const int16_t& fieldAbsorbPercent = it.abilities->fieldAbsorbPercent[combatTypeToIndex(combatType)];
+				if (fieldAbsorbPercent != 0) {
+					damage -= std::round(damage * (fieldAbsorbPercent / 100.));
+
+					uint16_t charges = item->getCharges();
+					if (charges != 0) {
+						g_game.transformItem(item, item->getID(), charges - 1);
+					}
 				}
 			}
 		}
@@ -2178,7 +2188,7 @@ bool Player::removeVIP(uint32_t vipGuid)
 
 bool Player::addVIP(uint32_t vipGuid, const std::string& vipName, VipStatus_t status)
 {
-	if (VIPList.size() >= getMaxVIPEntries() || VIPList.size() == 200) { // max number of buddies is 200 in 9.53
+	if (VIPList.size() >= getMaxVIPEntries()) {
 		sendTextMessage(MESSAGE_STATUS_SMALL, "You cannot add more buddies.");
 		return false;
 	}
@@ -2198,7 +2208,7 @@ bool Player::addVIP(uint32_t vipGuid, const std::string& vipName, VipStatus_t st
 
 bool Player::addVIPInternal(uint32_t vipGuid)
 {
-	if (VIPList.size() >= getMaxVIPEntries() || VIPList.size() == 200) { // max number of buddies is 200 in 9.53
+	if (VIPList.size() >= getMaxVIPEntries()) {
 		return false;
 	}
 
@@ -2276,6 +2286,10 @@ ReturnValue Player::queryAdd(int32_t index, const Thing& thing, uint32_t count, 
 
 	if (!item->isPickupable()) {
 		return RETURNVALUE_CANNOTPICKUP;
+	}
+
+	if (item->isStoreItem()) {
+		return RETURNVALUE_ITEMCANNOTBEMOVEDTHERE;
 	}
 
 	ReturnValue ret = RETURNVALUE_NOERROR;
@@ -2554,7 +2568,7 @@ ReturnValue Player::queryMaxCount(int32_t index, const Thing& thing, uint32_t co
 	}
 }
 
-ReturnValue Player::queryRemove(const Thing& thing, uint32_t count, uint32_t flags) const
+ReturnValue Player::queryRemove(const Thing& thing, uint32_t count, uint32_t flags, Creature* /*= nullptr*/) const
 {
 	int32_t index = getThingIndex(&thing);
 	if (index == -1) {
@@ -3094,7 +3108,7 @@ void Player::internalAddThing(uint32_t index, Thing* thing)
 		return;
 	}
 
-	//index == 0 means we should equip this item at the most appropiate slot (no action required here)
+	//index == 0 means we should equip this item at the most appropriate slot (no action required here)
 	if (index > CONST_SLOT_WHEREEVER && index <= CONST_SLOT_LAST) {
 		if (inventory[index]) {
 			return;
@@ -3798,14 +3812,6 @@ Skulls_t Player::getSkullClient(const Creature* creature) const
 		return Creature::getSkullClient(creature);
 	}
 
-	if (isInWar(player)) {
-		return SKULL_GREEN;
-	}
-
-	if (!player->getGuildWarVector().empty() && guild == player->getGuild()) {
-		return SKULL_GREEN;
-	}
-
 	if (player->hasAttacked(this)) {
 		return SKULL_YELLOW;
 	}
@@ -3975,12 +3981,12 @@ bool Player::isPremium() const
 		return true;
 	}
 
-	return premiumDays > 0;
+	return premiumEndsAt > time(nullptr);
 }
 
-void Player::setPremiumDays(int32_t v)
+void Player::setPremiumTime(time_t premiumEndsAt)
 {
-	premiumDays = v;
+	this->premiumEndsAt = premiumEndsAt;
 	sendBasicData();
 }
 
@@ -4515,10 +4521,11 @@ size_t Player::getMaxVIPEntries() const
 {
 	if (group->maxVipEntries != 0) {
 		return group->maxVipEntries;
-	} else if (isPremium()) {
-		return 100;
 	}
-	return 20;
+
+	return g_config.getNumber(isPremium() ?
+		ConfigManager::VIP_PREMIUM_LIMIT : ConfigManager::VIP_FREE_LIMIT
+	);
 }
 
 size_t Player::getMaxDepotItems() const

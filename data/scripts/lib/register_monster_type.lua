@@ -36,11 +36,13 @@ end
 registerMonsterType.maxHealth = function(mtype, mask)
 	if mask.maxHealth then
 		mtype:maxHealth(mask.maxHealth)
+		mtype:health(math.min(mtype:health(), mask.maxHealth))
 	end
 end
 registerMonsterType.health = function(mtype, mask)
 	if mask.health then
 		mtype:health(mask.health)
+		mtype:maxHealth(math.max(mask.health, mtype:maxHealth()))
 	end
 end
 registerMonsterType.runHealth = function(mtype, mask)
@@ -101,6 +103,11 @@ registerMonsterType.flags = function(mtype, mask)
 		end
 		if mask.flags.canPushCreatures ~= nil then
 			mtype:canPushCreatures(mask.flags.canPushCreatures)
+		end
+		-- if a monster can push creatures,
+		-- it should not be pushable
+		if mask.flags.canPushCreatures then
+			mtype:isPushable(false)
 		end
 		if mask.flags.targetDistance then
 			mtype:targetDistance(mask.flags.targetDistance)
